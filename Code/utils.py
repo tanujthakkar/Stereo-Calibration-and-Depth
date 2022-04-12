@@ -28,6 +28,14 @@ def convert_three_channel(img) -> np.array:
 def get_data_files(data_dir) -> list:
     return [os.path.join(data_dir,  f) for f in sorted(os.listdir(data_dir))]
 
+def create_image_set(img_set_paths: list) -> np.array:
+    img_set = list()
+    for img_path in img_set_paths:
+        img_set.append(cv2.imread(img_path))
+
+    img_set = np.array(img_set)
+    return img_set
+
 def parse_params(calib_path: str) -> dict:
     df = pd.read_csv(calib_path, sep='=', header=None)
     
