@@ -20,6 +20,7 @@ import matplotlib.pyplot as plt
 import argparse
 import time
 from typing import List, Tuple
+from tqdm import tqdm
 
 from utils import *
 
@@ -70,8 +71,9 @@ class StereoVision:
 
         return self.x0, self.x1
 
-    def __estimate_F_mat(self, x0: np.array, x1: np.array) -> np.array:
-        
+    def __estimate_F_mat(self, x0: np.array, x1: np.array, T0: np.array, T1: np.array) -> np.array:
+        # Reference - https://www.cc.gatech.edu/classes/AY2016/cs4476_fall/results/proj3/html/sdai30/index.html
+
         def construct_A(x0: np.array, x1: np.array) -> np.array:
             A = np.empty([0,9])
 
@@ -82,9 +84,71 @@ class StereoVision:
             return A
 
         A = construct_A(x0, x1)
+        U, S, V_t = np.linalg.svd(A)
+        F = V_t[-1].reshape(3,3)
+
+        U_f, S_f, V_t_f = np.linalg.svd(F)
+        S_f_ = np.diag(S_f)
+        S_f_[2,2] = 0
+        F_ = np.dot(U_f, np.dot(S_f_, V_t_f))
+
+        F = np.dot(T1.transpose(), np.dot(F_, T0))
+        F = F/F[-1,-1]
+
+        return F
+
+    def __RANSAC_F_mat(self, x0: np.array, x1: np.array, epsilon: float, iterations: int) -> Tuple[np.array, np.array]:
+
+        max_inliers = 0
+        best_inliers = None
+        best_F = None
+        features = np.arange(len(x0)).tolist()
+
+        def normalize_features(x: np.array) -> np.array:
+            # Reference - https://www.cc.gatech.edu/classes/AY2016/cs4476_fall/results/proj3/html/sdai30/index.html
+
+            x_u_, x_v_ = np.mean(x, axis=0)
+            x_ = x - [x_u_, x_v_]
+            s = np.sqrt(np.mean(x_[:,0]**2 + x_[:,1]**2))
+            T_s = np.diag([s, s, 1])
+            T_t = np.array([[1, 0, -x_u_],
+                           [0, 1, -x_v_],
+                           [0, 0, 1]])
+            T = np.dot(T_s, T_t)
+            x_ = np.column_stack((x_, np.ones(len(x_)))).transpose()
+            x_hat = np.dot(T, x_).transpose()
+
+            return x_hat, T
+
+        print("Performing RANSAC to estimate best F...")
+        for itr in tqdm(range(iterations)):
+            inliers = list()
+            feature_pairs = np.random.choice(features, 8, replace=False)
+            x0_, T0 = normalize_features(x0[feature_pairs])
+            x1_, T1 = normalize_features(x1[feature_pairs])
+            F = self.__estimate_F_mat(x0_, x1_, T0, T1)
+
+            for feature in range(len(features)):
+                x0_ = np.array([x0[feature][0], x0[feature][1], 1]).reshape(3,1)
+                x1_ = np.array([x1[feature][0], x1[feature][1], 1]).reshape(3,1)
+                epi_const = np.dot(np.dot(x1_.transpose(), F), x0_)
+                if(np.abs(epi_const) < epsilon):
+                    inliers.append([x0_, x1_])
+
+            if(len(inliers) >= max_inliers):
+                max_inliers = len(inliers)
+                best_inliers = inliers
+                best_F = F
+
+        best_inliers = np.array(best_inliers)
+        # print(best_inliers, best_inliers.shape)
+        print(F)
+
+        return F
 
     def calibrate(self):
         x0, x1 = self.__get_matches(self.img_set[0], self.img_set[1], False)
+        F = self.__RANSAC_F_mat(x0, x1, 0.01, 2000)
 
 
 def main():
