@@ -142,14 +142,23 @@ class StereoVision:
 
         best_inliers = np.array(best_inliers)
         # print(best_inliers, best_inliers.shape)
-        print(F)
+        # print(F)
 
         return F
+
+    def __estimate_E_mat(self, F: np.array, K: np.array) -> np.array:
+        E = np.dot(K.transpose(), np.dot(F, K))
+
+        U, S, V_t = np.linalg.svd(E)
+        S = np.diag([1, 1, 0])
+        E = np.dot(U, np.dot(S, V_t))
+        return E
 
     def calibrate(self):
         x0, x1 = self.__get_matches(self.img_set[0], self.img_set[1], False)
         F = self.__RANSAC_F_mat(x0, x1, 0.01, 2000)
-
+        E0 = self.__estimate_E_mat(F, self.calib_params['K_0'])
+        E1 = self.__estimate_E_mat(F, self.calib_params['K_1'])
 
 def main():
     Parser = argparse.ArgumentParser()
