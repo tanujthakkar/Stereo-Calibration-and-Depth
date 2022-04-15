@@ -202,6 +202,18 @@ class StereoVision:
             triangulated_pts_set = np.array(triangulated_pts_set)
             return triangulated_pts_set
 
+        def disambiguate_cam_poses(R: np.array, C: np.array, triangulated_pts_set: np.array):
+
+            max_pts = list()
+            for i in range(len(R)):
+                pts = 0
+                for pt in triangulated_pts_set[i]:
+                    if(np.dot(R[i][2,:], (pt.reshape(4,1)[:3]  - C[i]))[0] > 0):
+                        pts += 1
+                max_pts.append(pts)
+
+            return np.argmax(max_pts)
+
         U, D, V_t = np.linalg.svd(E)
         W = np.array([[0, -1, 0],
                       [1, 0, 0],
@@ -227,10 +239,13 @@ class StereoVision:
 
         P = projection_mat(K[1], R, C)
         triangulated_pts_set = compute_triangulated_pts(x0, x1, K, P)
+        idx = disambiguate_cam_poses(R, C, triangulated_pts_set)
+
+        return R[idx], C[idx]
 
     def calibrate(self):
         x0, x1 = self.__get_matches(self.img_set[0], self.img_set[1], False)
-        F, inliers = self.__RANSAC_F_mat(x0, x1, 0.002, 100)
+        F, inliers = self.__RANSAC_F_mat(x0, x1, 0.002, 2000)
         print("F:\n", F)
         E = self.__estimate_E_mat(F, self.K)
         print("E:\n", E)
