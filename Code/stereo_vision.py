@@ -39,8 +39,12 @@ class StereoVision:
         print("Estimating feature pairs...")
 
         sift = cv2.SIFT_create()
-        kp1, des1 = sift.detectAndCompute(img0, None)
-        kp2, des2 = sift.detectAndCompute(img1, None)
+
+        img0_gray = cv2.cvtColor(img0, cv2.COLOR_BGR2GRAY)
+        img1_gray = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)
+
+        kp1, des1 = sift.detectAndCompute(img0_gray, None)
+        kp2, des2 = sift.detectAndCompute(img1_gray, None)
 
         FLANN_INDEX_KDTREE = 1
         index_params = dict(algorithm = FLANN_INDEX_KDTREE, trees = 5)
@@ -53,7 +57,7 @@ class StereoVision:
         x1 = np.empty([0,2])
 
         for i,(m,n) in enumerate(matches):
-            if m.distance < 0.8*n.distance:
+            if m.distance < (0.8 * n.distance):
                 x0 = np.append(x0, np.array([kp1[m.queryIdx].pt]), axis=0)
                 x1 = np.append(x1, np.array([kp2[m.trainIdx].pt]), axis=0)
                 matchesMask[i]=[1,0]
@@ -81,7 +85,7 @@ class StereoVision:
         def construct_A(x0: np.array, x1: np.array) -> np.array:
             A = np.empty([0,9])
 
-            for i, j in zip(x0, x1):
+            for i, j in zip(x1, x0):
                 A_ij = np.array([i[0]*j[0], i[0]*j[1], i[0], i[1]*j[0], i[1]*j[1], i[1], j[0], j[1], 1]).reshape(1,9)
                 A = np.append(A, A_ij, axis=0)
 
@@ -98,7 +102,7 @@ class StereoVision:
 
         return F
 
-    def __RANSAC_F_mat(self, x0: np.array, x1: np.array, epsilon: float, iterations: int) -> Tuple[np.array, np.array]:
+    def __RANSAC_F_mat(self, x0: np.array, x1: np.array, epsilon: float, iterations: int, visualize: bool=False) -> Tuple[np.array, np.array]:
 
         print("\nPerforming RANSAC to estimate best F...")
 
@@ -129,29 +133,45 @@ class StereoVision:
         for itr in tqdm(range(iterations)):
             inliers = list()
             feature_pairs = np.random.choice(features, 8, replace=False)
+
             x0_ = x0_norm[feature_pairs]
             x1_ = x1_norm[feature_pairs]
-            F = self.__estimate_F_mat(x0_, x1_, T0, T1)
+            F_norm = self.__estimate_F_mat(x0_, x1_, T0, T1)
+            # print("F: \n", F)
 
             x0_ = np.vstack((x0_norm[:,0], x0_norm[:,1], np.ones(len(x0_norm))))
             x1_ = np.vstack((x1_norm[:,0], x1_norm[:,1], np.ones(len(x1_norm))))
-            epi_const = np.dot(np.dot(x1_.transpose(), F), x0_)
-            epi_const = np.abs(np.diag(epi_const))
+            epi_const = np.dot(np.dot(x1_.transpose(), F_norm), x0_)
+            # print(epi_const)
+            epi_const = np.abs(np.diagonal(epi_const))
+            # print(epi_const, epi_const.shape)
 
             inliers_idx = np.where(epi_const <= epsilon)
-            x0_inliers = x0_norm[inliers_idx[0]]
-            x1_inliers = x1_norm[inliers_idx[0]]
+            # print(inliers_idx)
+            x0_inliers = x0[inliers_idx[0]]
+            x1_inliers = x1[inliers_idx[0]]
             inliers = [x0_inliers, x1_inliers]
 
+            # input('q')
             if(len(x0_inliers) >= max_inliers):
                 max_inliers = len(x0_inliers)
                 best_inliers = inliers
-                best_F = F
+                best_F = F_norm
 
         best_inliers = np.array(best_inliers)
         print("Found {} inliers from RANSAC".format(len(best_inliers[0])))
 
-        F = np.dot(T1.transpose(), np.dot(F, T0))
+        temp = np.hstack((np.copy(self.img_set[0]), np.copy(self.img_set[1])))
+        for x0, x1 in zip(best_inliers[0], best_inliers[1]):
+            cv2.circle(temp,(int(x0[0]), int(x0[1])),2,(0,0,255),-1)
+            cv2.circle(temp,(int(x1[0])+self.img_set[0].shape[1], int(x1[1])),2,(0,0,255),-1)
+            cv2.line(temp, (int(x0[0]), int(x0[1])), (int(x1[0])+self.img_set[0].shape[1], int(x1[1])), (0,255,0), 1)
+
+        if(visualize):
+            cv2.imshow("Inliers", temp)
+            cv2.waitKey()
+
+        F = np.dot(T1.transpose(), np.dot(F_norm, T0))
         F = F/F[-1,-1]
 
         return F, best_inliers
@@ -215,9 +235,9 @@ class StereoVision:
             return np.argmax(max_pts)
 
         U, D, V_t = np.linalg.svd(E)
-        W = np.array([[0, -1, 0],
-                      [1, 0, 0],
-                      [0, 0, 1]])
+        W = np.float32(np.array([[0, -1, 0],
+                                 [1, 0, 0],
+                                 [0, 0, 1]]))
 
         R = np.empty([0,3,3])
         R = np.append(R, np.dot(U, np.dot(W, V_t)).reshape(1,3,3), axis=0)
@@ -245,11 +265,16 @@ class StereoVision:
 
     def calibrate(self):
         x0, x1 = self.__get_matches(self.img_set[0], self.img_set[1], False)
-        F, inliers = self.__RANSAC_F_mat(x0, x1, 0.002, 2000)
-        print("F:\n", F)
-        E = self.__estimate_E_mat(F, self.K)
-        print("E:\n", E)
-        self.__estimate_cam_pose(E, self.K, inliers[0], inliers[1])
+        self.F, self.inliers = self.__RANSAC_F_mat(x0, x1, 0.002, 2000, False)
+        print("F:\n", self.F)
+        self.E = self.__estimate_E_mat(self.F, self.K)
+        print("E:\n", self.E)
+        self.R, self.t = self.__estimate_cam_pose(self.E, self.K, self.inliers[0], self.inliers[1])
+        print("R:\n", self.R)
+        print("t:\n", self.t)
+
+    def rectify(self):
+        pass
 
 def main():
     Parser = argparse.ArgumentParser()
@@ -262,6 +287,7 @@ def main():
 
     SV = StereoVision(data_dir)
     SV.calibrate()
+    SV.rectify()
 
 if __name__ == '__main__':
     main()
