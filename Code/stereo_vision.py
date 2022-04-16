@@ -424,7 +424,7 @@ class StereoVision:
         # print(np.min(depth_map), np.max(depth_map), np.mean(depth_map), np.median(depth_map))
 
         depth_map[depth_map > np.median(depth_map)] = np.median(depth_map)
-        depth_map = np.interp(depth_map, (depth_map.min(), depth_map.max()), (0, 255)).astype(np.uint8)
+        # depth_map = np.interp(depth_map, (depth_map.min(), depth_map.max()), (0, 255)).astype(np.uint8)
         # depth_map = np.uint8(depth_map * 240 / np.max(depth_map))
 
         plt.figure()
