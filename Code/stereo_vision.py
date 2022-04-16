@@ -274,7 +274,9 @@ class StereoVision:
         print("t:\n", self.t)
 
     def rectify(self):
-        pass
+        H1, H2, ret = cv2.stereoRectifyUncalibrated(self.inliers[0], self.inliers[1], self.F, self.img_set[0].shape)
+        print(H1)
+        print(H2)
 
 def main():
     Parser = argparse.ArgumentParser()
