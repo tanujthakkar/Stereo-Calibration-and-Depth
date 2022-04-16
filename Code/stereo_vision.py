@@ -79,7 +79,7 @@ class StereoVision:
         self.x0, self.x1 = x0, x1
         return self.x0, self.x1
 
-    def __estimate_F_mat(self, x0: np.array, x1: np.array, T0: np.array, T1: np.array) -> np.array:
+    def __estimate_F_mat(self, x0: np.array, x1: np.array) -> np.array:
         # Reference - https://www.cc.gatech.edu/classes/AY2016/cs4476_fall/results/proj3/html/sdai30/index.html
 
         def construct_A(x0: np.array, x1: np.array) -> np.array:
@@ -136,7 +136,7 @@ class StereoVision:
 
             x0_ = x0_norm[feature_pairs]
             x1_ = x1_norm[feature_pairs]
-            F_norm = self.__estimate_F_mat(x0_, x1_, T0, T1)
+            F_norm = self.__estimate_F_mat(x0_, x1_)
             # print("F: \n", F)
 
             x0_ = np.vstack((x0_norm[:,0], x0_norm[:,1], np.ones(len(x0_norm))))
@@ -147,7 +147,6 @@ class StereoVision:
             # print(epi_const, epi_const.shape)
 
             inliers_idx = np.where(epi_const <= epsilon)
-            # print(inliers_idx)
             x0_inliers = x0[inliers_idx[0]]
             x1_inliers = x1[inliers_idx[0]]
             inliers = [x0_inliers, x1_inliers]
@@ -263,9 +262,20 @@ class StereoVision:
 
         return R[idx], C[idx]
 
+    def draw_epi_lines(self, img: np.array, lines: np.array, pts: np.array) -> np.array:
+        r, c = img.shape[:2]
+        for r, pt in zip(lines, pts):
+            color = tuple(np.random.randint(0,255,3).tolist())
+            x0,y0 = map(int, [0, -r[2]/r[1]])
+            x1,y1 = map(int, [c, -(r[2]+r[0]*c)/r[1]])
+            img = cv2.line(img, (x0,y0), (x1,y1), color,1)
+            img = cv2.circle(img,tuple(pt),5,color,-1)
+
+        return img
+
     def calibrate(self):
         x0, x1 = self.__get_matches(self.img_set[0], self.img_set[1], False)
-        self.F, self.inliers = self.__RANSAC_F_mat(x0, x1, 0.002, 2000, False)
+        self.F, self.inliers = self.__RANSAC_F_mat(x0, x1, 0.002, 5000, False)
         print("F:\n", self.F)
         self.E = self.__estimate_E_mat(self.F, self.K)
         print("E:\n", self.E)
@@ -274,9 +284,25 @@ class StereoVision:
         print("t:\n", self.t)
 
     def rectify(self):
-        H1, H2, ret = cv2.stereoRectifyUncalibrated(self.inliers[0], self.inliers[1], self.F, self.img_set[0].shape)
-        print(H1)
-        print(H2)
+
+        h, w = self.img_set[0].shape[:2]
+        ret, H1, H2 = cv2.stereoRectifyUncalibrated(self.inliers[0], self.inliers[1], self.F, (w, h))
+
+        img0_rect = cv2.warpPerspective(self.img_set[0], H1, (w, h))
+        img1_rect = cv2.warpPerspective(self.img_set[1], H2, (w, h))
+
+        H2_T_inv =  np.linalg.inv(H2.T)
+        H1_inv = np.linalg.inv(H1)
+        F_rect = np.dot(H2_T_inv, np.dot(self.F, H1_inv))
+
+        epi_lines0 = cv2.computeCorrespondEpilines(self.inliers[1].reshape(-1,1,2), 2, F_rect).reshape(-1,3)
+        epi_lines1 = cv2.computeCorrespondEpilines(self.inliers[0].reshape(-1,1,2), 1, F_rect).reshape(-1,3)
+
+        img0_rect = self.draw_epi_lines(img0_rect, epi_lines0, self.inliers[0].astype(np.int32))
+        img1_rect = self.draw_epi_lines(img1_rect, epi_lines1, self.inliers[1].astype(np.int32))
+
+        cv2.imshow("IMGs Rectified", np.hstack((img0_rect, img1_rect)))
+        cv2.waitKey()
 
 def main():
     Parser = argparse.ArgumentParser()
