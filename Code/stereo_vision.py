@@ -21,9 +21,12 @@ import argparse
 import time
 from typing import List, Tuple
 from tqdm import tqdm
+import seaborn as sns
+sns.set_theme()
 
 from utils import *
 
+np.set_printoptions(precision=3)
 
 class StereoVision:
 
@@ -31,6 +34,7 @@ class StereoVision:
         self.data_dir = data_dir
         self.data_files = get_data_files(data_dir)
         self.dataset = self.data_dir.split('/')[-2]
+        print("Dataset: {}".format(self.dataset))
         self.save = save
         self.visualize = visualize
         self.save_path = os.path.join('../Results', self.dataset)
@@ -84,6 +88,9 @@ class StereoVision:
             # cv2.imshow("Inputs", np.hstack((img0, img1)))
             cv2.imshow("Matches", img_matches)
             cv2.waitKey()
+
+        if(self.save):
+            cv2.imwrite(os.path.join(self.save_path, self.dataset + '_matches.png'), img_matches)
 
         self.x0, self.x1 = x0, x1
         return self.x0, self.x1
@@ -279,11 +286,13 @@ class StereoVision:
 
     def draw_epi_lines(self, img: np.array, lines: np.array, pts: np.array) -> np.array:
         r, c = img.shape[:2]
-        for r, pt in zip(lines, pts):
+
+        epi_lines = np.random.choice(np.arange(len(lines)), 100, replace=False)
+        for r, pt in zip(lines[epi_lines], pts[epi_lines]):
             color = tuple(np.random.randint(0,255,3).tolist())
             x0,y0 = map(int, [0, -r[2]/r[1]])
             x1,y1 = map(int, [c, -(r[2]+r[0]*c)/r[1]])
-            img = cv2.line(img, (x0,y0), (x1,y1), color,1)
+            img = cv2.line(img, (x0,y0), (x1,y1), color,2)
             img = cv2.circle(img,tuple(pt[0]),5,color,-1)
 
         return img
@@ -301,16 +310,27 @@ class StereoVision:
     def rectify(self, visualize: bool=False) -> Tuple[np.array, np.array]:
         # Reference - https://docs.opencv.org/4.x/da/de9/tutorial_py_epipolar_geometry.html
 
+        print("\nRectifying the stereo pair...")
         h, w = self.img_set[0].shape[:2]
 
         ret, H1, H2 = cv2.stereoRectifyUncalibrated(self.inliers[0], self.inliers[1], self.F, (w, h))
 
+        print("H_l:\n", H1)
+        print("H_r:\n", H2)
+
         img0_rect = cv2.warpPerspective(self.img_set[0], H1, (w, h))
         img1_rect = cv2.warpPerspective(self.img_set[1], H2, (w, h))
 
-        H2_T_inv =  np.linalg.inv(H2.T)
+        H2_T_inv =  np.linalg.inv(H2.transpose())
         H1_inv = np.linalg.inv(H1)
         F_rect = np.dot(H2_T_inv, np.dot(self.F, H1_inv))
+
+        # Unrectified
+        epi_unrect_lines0 = cv2.computeCorrespondEpilines(self.inliers[0].reshape(-1,1,2), 2, F_rect).reshape(-1,3)
+        epi_unrect_lines1 = cv2.computeCorrespondEpilines(self.inliers[1].reshape(-1,1,2), 1, F_rect).reshape(-1,3)
+
+        img0_unrect_epi_lines = self.draw_epi_lines(np.copy(self.img_set[0]), epi_unrect_lines0, self.inliers[0].reshape(-1,1,2).astype(np.int32))
+        img1_unrect_epi_lines = self.draw_epi_lines(np.copy(self.img_set[1]), epi_unrect_lines1, self.inliers[1].reshape(-1,1,2).astype(np.int32))
 
         x0_trans = cv2.perspectiveTransform(np.float32(self.inliers[0]).reshape(-1,1,2), H1)
         x1_trans = cv2.perspectiveTransform(np.float32(self.inliers[1]).reshape(-1,1,2), H2)
@@ -321,46 +341,34 @@ class StereoVision:
         img0_epi_lines = self.draw_epi_lines(np.copy(img0_rect), epi_lines0, x0_trans.astype(np.int32))
         img1_epi_lines = self.draw_epi_lines(np.copy(img1_rect), epi_lines1, x1_trans.astype(np.int32))
 
+
         if(self.visualize):
+            cv2.imshow("IMGs Unrectified", np.hstack((img0_unrect_epi_lines, img1_unrect_epi_lines)))
             cv2.imshow("IMGs Rectified", np.hstack((img0_epi_lines, img1_epi_lines)))
             cv2.waitKey()
 
         if(self.save):
             cv2.imwrite(os.path.join(self.save_path, self.dataset + '_rectified.png'), np.hstack((img0_rect, img1_rect)))
+            cv2.imwrite(os.path.join(self.save_path, self.dataset + '_unrectified_epi_lines.png'), np.hstack((img0_unrect_epi_lines, img1_unrect_epi_lines)))
             cv2.imwrite(os.path.join(self.save_path, self.dataset + '_epi_lines.png'), np.hstack((img0_epi_lines, img1_epi_lines)))
 
         self.img_rect_set = [img0_rect, img1_rect]
         return img0_rect, img1_rect
 
-    def compute_disparity(self, block_size: int, search_window: int, visualize: bool=False) -> np.array:
+    def compute_disparity(self, block_size: int, search_window: int=0, SSD: bool=False, visualize: bool=False) -> np.array:
         # Reference - https://pramod-atre.medium.com/disparity-map-computation-in-python-and-c-c8113c63d701
         #           - http://mccormickml.com/2014/01/10/stereo-vision-tutorial-part-i/
 
         print("\nComputing disparity...")
 
-        img_l = cv2.resize(self.img_rect_set[0], None, fx=0.25, fy=0.25, interpolation=cv2.INTER_CUBIC)
-        img_l = cv2.cvtColor(img_l, cv2.COLOR_BGR2GRAY)
-        img_r = cv2.resize(self.img_rect_set[1], None, fx=0.25, fy=0.25, interpolation=cv2.INTER_CUBIC)
-        img_r = cv2.cvtColor(img_r, cv2.COLOR_BGR2GRAY)
+        img_l = cv2.cvtColor(self.img_rect_set[0], cv2.COLOR_BGR2GRAY)
+        img_r = cv2.cvtColor(self.img_rect_set[1], cv2.COLOR_BGR2GRAY)
         
         if(visualize):
             cv2.imshow("Stereo Pair", np.hstack((img_l, img_r)))
             cv2.waitKey()
 
-        def SAD(block0, block1):
-            if(block0.shape != block1.shape):
-                return -1
-
-            return np.sum(np.abs(block0 - block1))
-
-        def SSD(block0, block1):
-            if(block0.shape != block1.shape):
-                return -1
-
-            return np.sum((block0 - block1)**2)
-
         h, w = img_l.shape
-        # print(h, w)
         disparity_map = np.zeros((h, w))
 
         for r in tqdm(range(0, h-block_size)):
@@ -375,40 +383,38 @@ class StereoVision:
 
             left_row = np.array(left_row)
             right_row = np.array(right_row)
-            # print(left_row.shape)
-            # print(right_row.shape)
 
             for i in range(len(left_row)):
-                # print(np.abs(right_row - left_row[i]), np.abs(right_row - left_row[i]).shape)
-                similarity_scores = np.sum(np.abs(right_row - left_row[i]), axis=1)
-                # print(similarity_scores, similarity_scores.shape)
+                start = max(0, i-search_window)
+                end = min(len(right_row), i+search_window)
+                if(SSD):
+                    similarity_scores = np.sum((right_row[start:end] - left_row[i])**2, axis=1)
+                else:
+                    similarity_scores = np.sum(np.abs(right_row[start:end] - left_row[i]), axis=1)
                 idx = np.argmin(similarity_scores)
-                # print(idx, idx.shape)
-                disparity = np.abs(i - idx)
+                disparity = np.abs(i - (start+idx))
                 disparity_map[r,i] = disparity
-                # print(disparity, disparity.shape)
-                # input('q')
 
         # disparity_map = normalize(disparity_map, 0, 255)
-        # disparity_map[disparity_map > np.median(disparity_map)] = np.median(disparity_map)
-        # disparity_map = np.uint8(disparity_map * 240 / np.max(disparity_map))
+        disparity_map = np.interp(disparity_map, (disparity_map.min(), disparity_map.max()), (0, 255)).astype(np.uint8)
 
-        stereo = cv2.StereoBM_create(numDisparities=16, blockSize=15)
-        disparity_map_ = stereo.compute(img_l,img_r)
-        disparity_map_ = normalize(disparity_map_, 0, 255)
-
-        plt.figure()
+        plt.figure(figsize=(6.4,3.6), dpi=100)
         plt.axis('off')
-        plt.imshow(disparity_map, cmap='gray', interpolation='nearest')
-            # plt.subplot(211)
-            # plt.imshow(disparity_map_,'gray', interpolation='nearest')
+        sns.heatmap(disparity_map, cmap='gray')
+        # plt.imshow(disparity_map, cmap='gray', interpolation='nearest')
 
-            # plt.subplot(212)
         if(self.visualize):
             plt.show()
 
         if(self.save):
-            plt.savefig(os.path.join(self.save_path, self.dataset + '_disparity.png'), bbox_inches='tight')
+            plt.savefig(os.path.join(self.save_path, self.dataset + '_disparity_gray.png'), bbox_inches='tight')
+            plt.clf()
+            plt.figure(figsize=(6.4,3.6), dpi=100)
+            plt.axis('off')
+            sns.heatmap(disparity_map)
+            plt.savefig(os.path.join(self.save_path, self.dataset + '_disparity_heatmap.png'), bbox_inches='tight')
+            # with open (os.path.join(self.save_path, self.dataset + '_disparity.npy'), 'wb') as f:
+            #     np.save(f, disparity_map)
 
         self.disparity_map = disparity_map
         return disparity_map
@@ -420,22 +426,27 @@ class StereoVision:
         baseline = self.calib_params['baseline']
         f = self.K[0][0,0]
 
-        depth_map = (baseline * f) / (self.disparity_map + 1e-20)
-        # print(np.min(depth_map), np.max(depth_map), np.mean(depth_map), np.median(depth_map))
+        depth_map = (baseline * f) / (self.disparity_map + 1e-10)
 
         depth_map[depth_map > np.median(depth_map)] = np.median(depth_map)
-        # depth_map = np.interp(depth_map, (depth_map.min(), depth_map.max()), (0, 255)).astype(np.uint8)
-        # depth_map = np.uint8(depth_map * 240 / np.max(depth_map))
+        # depth_map = normalize(depth_map, 0, 255)
+        depth_map = np.interp(depth_map, (depth_map.min(), depth_map.max()), (0, 255)).astype(np.uint8)
 
-        plt.figure()
+        plt.figure(figsize=(6.4,3.6), dpi=100)
         plt.axis('off')
-        plt.imshow(depth_map, cmap='hot', interpolation='nearest')
-        
+        sns.heatmap(depth_map)
+        # plt.imshow(depth_map, cmap='hot', interpolation='bilinear')
+
         if(self.visualize):
             plt.show()
 
         if(self.save):
-            plt.savefig(os.path.join(self.save_path, self.dataset + '_depth.png'), bbox_inches='tight')
+            plt.savefig(os.path.join(self.save_path, self.dataset + '_depth_heatmap.png'), bbox_inches='tight')
+            plt.clf()
+            plt.figure(figsize=(6.4,3.6), dpi=100)
+            plt.axis('off')
+            sns.heatmap(depth_map, cmap='gray')
+            plt.savefig(os.path.join(self.save_path, self.dataset + '_depth_gray.png'), bbox_inches='tight')
 
         self.depth_map = depth_map
         return depth_map
@@ -454,7 +465,7 @@ def main():
     SV = StereoVision(data_dir, save, visualize)
     SV.calibrate()
     SV.rectify()
-    SV.compute_disparity(15, 45)
+    SV.compute_disparity(21, 75, True)
     SV.compute_depth()
 
 if __name__ == '__main__':
