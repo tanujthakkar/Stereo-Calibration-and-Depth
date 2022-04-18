@@ -41,15 +41,15 @@ def parse_params(calib_path: str) -> dict:
     
     params = dict()
 
-    K_0 = str(df[1][0]).replace('[', ' ').replace(']', ' ').replace(';', ' ').split()
-    K_0 = np.array([float(i) for i in K_0]).reshape(3,3)
-    params['K_0'] = K_0
+    K0 = str(df[1][0]).replace('[', ' ').replace(']', ' ').replace(';', ' ').split()
+    K0 = np.array([float(i) for i in K0]).reshape(3,3)
+    params['K0'] = K0
     
-    K_1 = str(df[1][1]).replace('[', ' ').replace(']', ' ').replace(';', ' ').split()
-    K_1 = np.array([float(i) for i in K_1]).reshape(3,3)
-    params['K_1'] = K_1
+    K1 = str(df[1][1]).replace('[', ' ').replace(']', ' ').replace(';', ' ').split()
+    K1 = np.array([float(i) for i in K1]).reshape(3,3)
+    params['K1'] = K1
 
     for param in range(2, len(df[0])):
-        params[df[0][param]] = df[1][param]
+        params[df[0][param]] = float(df[1][param])
 
     return params
